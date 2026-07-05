@@ -120,7 +120,13 @@ jobs:
           fetch-depth: 0
 
       - name: ✅ 校验源码
-        run: test -f Cargo.toml && test -f client/package.json && test -f client/src-tauri/Cargo.toml
+        run: |
+          test -f Cargo.toml
+          test -f client/package.json
+          test -f client/src-tauri/Cargo.toml
+          test -f client/src-tauri/src/lib.rs
+          test -f client/src-tauri/icons/icon.png
+          test -f client/src-tauri/icons/icon.ico
 
       - name: ⚙️ 设置 Rust 运行环境
         uses: dtolnay/rust-toolchain@stable
@@ -190,7 +196,13 @@ jobs:
           fetch-depth: 0
 
       - name: ✅ 校验源码
-        run: test -f Cargo.toml && test -f client/package.json && test -f client/src-tauri/Cargo.toml
+        run: |
+          test -f Cargo.toml
+          test -f client/package.json
+          test -f client/src-tauri/Cargo.toml
+          test -f client/src-tauri/src/lib.rs
+          test -f client/src-tauri/icons/icon.png
+          test -f client/src-tauri/icons/icon.ico
 
       - name: 📦 配置 PNPM
         uses: pnpm/action-setup@v4
@@ -279,7 +291,13 @@ jobs:
           fetch-depth: 0
 
       - name: ✅ 校验源码
-        run: test -f Cargo.toml && test -f client/package.json && test -f client/src-tauri/Cargo.toml
+        run: |
+          test -f Cargo.toml
+          test -f client/package.json
+          test -f client/src-tauri/Cargo.toml
+          test -f client/src-tauri/src/lib.rs
+          test -f client/src-tauri/icons/icon.png
+          test -f client/src-tauri/icons/icon.ico
 
       - name: 📦 配置 PNPM
         uses: pnpm/action-setup@v4
