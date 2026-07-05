@@ -1,6 +1,9 @@
 ﻿name: 🚀 发版构建
 
 on:
+  repository_dispatch:
+    types:
+      - release-build
   workflow_dispatch:
     inputs:
       tag:
@@ -34,6 +37,7 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
           MANUAL_TAG: ${{ inputs.tag }}
           PUBLIC_REPOSITORY: ${{ github.repository }}
         run: |
@@ -44,7 +48,9 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$MANUAL_TAG" ]; then
+          if [ -n "$DISPATCH_TAG" ]; then
+            tag="$DISPATCH_TAG"
+          elif [ -n "$MANUAL_TAG" ]; then
             tag="$MANUAL_TAG"
           else
             tag="$(gh api repos/${{ env.PRIVATE_REPOSITORY }}/tags --jq '.[0].name // empty')"
@@ -77,33 +83,9 @@ jobs:
             echo "发现需要构建的 tag：$tag"
           fi
 
-  ensure-release:
-    name: 🏷️ 准备发布 Release
-    needs: check-private-tag
-    if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🏷️ 创建或复用 Release
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo "发布 Release 已存在：$RELEASE_TAG"
-          else
-            gh release create "$RELEASE_TAG" \
-              --repo "$GH_REPO" \
-              --title "$RELEASE_TAG" \
-              --notes "SakuraBot $RELEASE_TAG 自动构建产物。"
-          fi
-
   backend:
     name: 🛠️ 后端构建 (${{ matrix.target }})
-    needs:
-      - check-private-tag
-      - ensure-release
+    needs: check-private-tag
     if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -173,9 +155,7 @@ jobs:
 
   frontend-desktop:
     name: 🖥️ 前端桌面端构建 (${{ matrix.target }})
-    needs:
-      - check-private-tag
-      - ensure-release
+    needs: check-private-tag
     if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -184,16 +164,22 @@ jobs:
         include:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
           - runner: windows-latest
             target: aarch64-pc-windows-msvc
+            bundles: msi,nsis
           - runner: macos-latest
             target: x86_64-apple-darwin
+            bundles: app,dmg
           - runner: macos-latest
             target: aarch64-apple-darwin
+            bundles: app,dmg
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
     steps:
       - name: 📂 检出源码仓库
         uses: actions/checkout@v4
@@ -249,7 +235,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         with:
           projectPath: client
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci
 
       - name: 📦 整理桌面端构建产物
         run: |
@@ -268,9 +254,7 @@ jobs:
 
   frontend-mobile:
     name: 📱 前端移动端构建 (${{ matrix.platform }})
-    needs:
-      - check-private-tag
-      - ensure-release
+    needs: check-private-tag
     if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -279,12 +263,12 @@ jobs:
         include:
           - platform: android
             runner: ubuntu-latest
-            args: android build --apk
-            artifact_glob: client/src-tauri/gen/android/app/build/outputs/**/*.apk
+            args: android build --apk --ci
+            artifact_ext: "*.apk"
           - platform: ios
             runner: macos-latest
             args: ios build
-            artifact_glob: client/src-tauri/gen/apple/build/**/*.ipa
+            artifact_ext: "*.ipa"
     steps:
       - name: 📂 检出源码仓库
         uses: actions/checkout@v4
@@ -319,6 +303,25 @@ jobs:
           distribution: temurin
           java-version: 17
 
+
+      - name: 🤖 设置 Android SDK
+        if: ${{ matrix.platform == 'android' }}
+        uses: android-actions/setup-android@v3
+
+      - name: 🤖 安装 Android SDK/NDK 组件
+        if: ${{ matrix.platform == 'android' }}
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: 🤖 安装 Android Rust targets
+        if: ${{ matrix.platform == 'android' }}
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+
+      - name: 🍎 安装 iOS Rust targets
+        if: ${{ matrix.platform == 'ios' }}
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - name: 💾 缓存 Cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -347,12 +350,10 @@ jobs:
 
       - name: 📦 整理移动端构建产物
         run: |
-          mkdir -p "${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}"
-          shopt -s globstar nullglob
-          for artifact in ${{ matrix.artifact_glob }}; do
-            cp "$artifact" "${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}/"
-          done
-          test -n "$(find "${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}" -type f -print -quit)"
+          output_dir="${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}"
+          mkdir -p "$output_dir"
+          find client/src-tauri/gen -type f -name '${{ matrix.artifact_ext }}' -exec cp {} "$output_dir/" \;
+          test -n "$(find "$output_dir" -type f -print -quit)"
 
       - name: ⬆️ 上传移动端构建产物
         uses: actions/upload-artifact@v4
@@ -378,10 +379,18 @@ jobs:
           merge-multiple: true
 
       - name: 📤 上传 Release 产物
+        run: printf 'SakuraBot %s build complete\n' "${{ needs.check-private-tag.outputs.tag }}" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
+
+      - name: 🚀 创建或更新 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-private-tag.outputs.tag }}
+          name: ${{ needs.check-private-tag.outputs.tag }}
+          make_latest: true
+          files: ${{ env.RELEASE_DIR }}/*
+          body: |
+            ## SakuraBot ${{ needs.check-private-tag.outputs.tag }}
+
+            本 Release 由发布仓库自动构建。
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
-        run: |
-          printf 'SakuraBot %s build complete\n' "$RELEASE_TAG" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
-          find "${{ env.RELEASE_DIR }}" -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --repo "$GH_REPO" --clobber
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
