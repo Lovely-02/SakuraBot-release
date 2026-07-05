@@ -275,12 +275,8 @@ jobs:
         include:
           - platform: android
             runner: ubuntu-latest
-            args: android build --apk --ci
+            args: android build --apk --ci -vv
             artifact_ext: "*.apk"
-          - platform: ios
-            runner: macos-latest
-            args: ios build
-            artifact_ext: "*.ipa"
     steps:
       - name: 📂 检出源码仓库
         uses: actions/checkout@v4
@@ -315,7 +311,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: ☕ 设置 Java 运行环境
-        if: ${{ matrix.platform == 'android' }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -323,23 +318,17 @@ jobs:
 
 
       - name: 🤖 设置 Android SDK
-        if: ${{ matrix.platform == 'android' }}
         uses: android-actions/setup-android@v3
 
       - name: 🤖 安装 Android SDK/NDK 组件
-        if: ${{ matrix.platform == 'android' }}
         run: |
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
       - name: 🤖 安装 Android Rust targets
-        if: ${{ matrix.platform == 'android' }}
         run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
-      - name: 🍎 安装 iOS Rust targets
-        if: ${{ matrix.platform == 'ios' }}
-        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - name: 💾 缓存 Cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -349,18 +338,16 @@ jobs:
       - name: 📦 安装前端依赖
         run: pnpm --dir client install --frozen-lockfile
 
+      - name: 🧾 输出移动端构建环境
+        run: |
+          pnpm --dir client tauri info
+          cargo tree --manifest-path client/src-tauri/Cargo.toml -i openssl-sys || true
+          cargo tree --manifest-path client/src-tauri/Cargo.toml -i native-tls || true
+
       - name: 🤖 初始化 Android 项目
-        if: ${{ matrix.platform == 'android' }}
         run: |
           if [ ! -d client/src-tauri/gen/android ]; then
-            pnpm --dir client tauri android init
-          fi
-
-      - name: 🍎 初始化 iOS 项目
-        if: ${{ matrix.platform == 'ios' }}
-        run: |
-          if [ ! -d client/src-tauri/gen/apple ]; then
-            pnpm --dir client tauri ios init
+            pnpm --dir client tauri android init --ci -vv
           fi
 
       - name: 📱 构建移动端前端
@@ -387,7 +374,7 @@ jobs:
       - backend
       - frontend-desktop
       - frontend-mobile
-    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() && !contains(needs.*.result, 'failure') }}
+    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() && needs.backend.result == 'success' && needs.frontend-desktop.result == 'success' && needs.frontend-mobile.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: 💾 下载全部构建产物
