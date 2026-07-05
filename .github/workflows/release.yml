@@ -90,10 +90,11 @@ jobs:
           RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             echo "发布 Release 已存在：$RELEASE_TAG"
           else
             gh release create "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
               --title "$RELEASE_TAG" \
               --notes "SakuraBot $RELEASE_TAG 自动构建产物。"
           fi
@@ -383,4 +384,4 @@ jobs:
           RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
         run: |
           printf 'SakuraBot %s build complete\n' "$RELEASE_TAG" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
-          find "${{ env.RELEASE_DIR }}" -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
+          find "${{ env.RELEASE_DIR }}" -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --repo "$GH_REPO" --clobber
