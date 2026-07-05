@@ -1,0 +1,379 @@
+﻿name: 🚀 发版构建
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 源码 Release 标签；留空则检查最新 tag
+        required: false
+        type: string
+  schedule:
+    - cron: '*/30 * * * *'
+
+env:
+  APP_NAME: SakuraBot
+  PRIVATE_REPOSITORY: Lovely-02/SakuraBot
+  RELEASE_DIR: SakuraBot-release
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check-private-tag:
+    name: 🔎 检查源码 tag
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: 🔎 检查最新 tag 和发布 Release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MANUAL_TAG: ${{ inputs.tag }}
+          PUBLIC_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$MANUAL_TAG" ]; then
+            tag="$MANUAL_TAG"
+          else
+            tag="$(gh api repos/${{ env.PRIVATE_REPOSITORY }}/tags --jq '.[0].name // empty')"
+          fi
+
+          if [ -z "$tag" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "未发现源码 tag，跳过构建。"
+            exit 0
+          fi
+
+          if ! gh api repos/${{ env.PRIVATE_REPOSITORY }}/git/ref/tags/$tag >/dev/null 2>&1; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "源码 tag 不存在：$tag"
+            exit 0
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          release_json="$(GH_TOKEN='${{ secrets.GITHUB_TOKEN }}' gh api repos/$PUBLIC_REPOSITORY/releases/tags/$tag 2>/dev/null || true)"
+          build_complete="$(printf '%s' "$release_json" | jq -r '.assets[]?.name | select(. == "SakuraBot-build-complete.txt")' 2>/dev/null || true)"
+
+          if [ -n "$build_complete" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "发布 Release $tag 已有构建完成标记，跳过构建。"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "发现需要构建的 tag：$tag"
+          fi
+
+  ensure-release:
+    name: 🏷️ 准备发布 Release
+    needs: check-private-tag
+    if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🏷️ 创建或复用 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "发布 Release 已存在：$RELEASE_TAG"
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes "SakuraBot $RELEASE_TAG 自动构建产物。"
+          fi
+
+  backend:
+    name: 🛠️ 后端构建 (${{ matrix.target }})
+    needs:
+      - check-private-tag
+      - ensure-release
+    if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+          - runner: windows-latest
+            target: aarch64-pc-windows-msvc
+            ext: .exe
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            ext: ''
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            ext: ''
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ''
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ''
+    steps:
+      - name: 📂 检出源码仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPOSITORY }}
+          ref: ${{ needs.check-private-tag.outputs.tag }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: ✅ 校验源码
+        run: test -f Cargo.toml && test -f client/package.json && test -f client/src-tauri/Cargo.toml
+
+      - name: ⚙️ 设置 Rust 运行环境
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 💾 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: backend-${{ matrix.target }}
+
+      - name: 🛠️ 构建后端
+        run: cargo build --release --bin ${{ env.APP_NAME }} --target ${{ matrix.target }}
+
+      - name: 📦 整理后端构建产物
+        run: |
+          mkdir -p "${{ env.RELEASE_DIR }}/backend/${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/${{ env.APP_NAME }}${{ matrix.ext }}" "${{ env.RELEASE_DIR }}/backend/${{ matrix.target }}/"
+          cp README.md "${{ env.RELEASE_DIR }}/backend/${{ matrix.target }}/"
+          if [ -f CHANGELOG.md ]; then
+            cp CHANGELOG.md "${{ env.RELEASE_DIR }}/backend/${{ matrix.target }}/"
+          fi
+
+      - name: 🗜️ 打包后端构建产物
+        run: tar -czf "${{ env.RELEASE_DIR }}/${{ env.APP_NAME }}-backend-${{ matrix.target }}.tar.gz" -C "${{ env.RELEASE_DIR }}/backend/${{ matrix.target }}" .
+
+      - name: ⬆️ 上传后端构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-backend-${{ matrix.target }}
+          path: ${{ env.RELEASE_DIR }}/${{ env.APP_NAME }}-backend-${{ matrix.target }}.tar.gz
+
+  frontend-desktop:
+    name: 🖥️ 前端桌面端构建 (${{ matrix.target }})
+    needs:
+      - check-private-tag
+      - ensure-release
+    if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-latest
+            target: aarch64-pc-windows-msvc
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: 📂 检出源码仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPOSITORY }}
+          ref: ${{ needs.check-private-tag.outputs.tag }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: ✅ 校验源码
+        run: test -f Cargo.toml && test -f client/package.json && test -f client/src-tauri/Cargo.toml
+
+      - name: 📦 配置 PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: ⚙️ 设置 Node.js 运行环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: 🧩 安装 Linux Tauri 构建依赖
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: ⚙️ 设置 Rust 运行环境
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 💾 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+          key: frontend-desktop-${{ matrix.target }}
+
+      - name: 📦 安装前端依赖
+        run: pnpm --dir client install --frozen-lockfile
+
+      - name: 🖥️ 构建桌面端前端
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          args: --target ${{ matrix.target }}
+
+      - name: 📦 整理桌面端构建产物
+        run: |
+          mkdir -p "${{ env.RELEASE_DIR }}/frontend-desktop/${{ matrix.target }}"
+          find client/src-tauri/target/${{ matrix.target }}/release/bundle -type f \
+            \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) \
+            -exec cp {} "${{ env.RELEASE_DIR }}/frontend-desktop/${{ matrix.target }}/" \;
+          test -n "$(find "${{ env.RELEASE_DIR }}/frontend-desktop/${{ matrix.target }}" -type f -print -quit)"
+
+      - name: ⬆️ 上传桌面端构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-frontend-desktop-${{ matrix.target }}
+          path: ${{ env.RELEASE_DIR }}/frontend-desktop/${{ matrix.target }}/*
+          if-no-files-found: error
+
+  frontend-mobile:
+    name: 📱 前端移动端构建 (${{ matrix.platform }})
+    needs:
+      - check-private-tag
+      - ensure-release
+    if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            runner: ubuntu-latest
+            args: android build --apk
+            artifact_glob: client/src-tauri/gen/android/app/build/outputs/**/*.apk
+          - platform: ios
+            runner: macos-latest
+            args: ios build
+            artifact_glob: client/src-tauri/gen/apple/build/**/*.ipa
+    steps:
+      - name: 📂 检出源码仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPOSITORY }}
+          ref: ${{ needs.check-private-tag.outputs.tag }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: ✅ 校验源码
+        run: test -f Cargo.toml && test -f client/package.json && test -f client/src-tauri/Cargo.toml
+
+      - name: 📦 配置 PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: ⚙️ 设置 Node.js 运行环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: ⚙️ 设置 Rust 运行环境
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: ☕ 设置 Java 运行环境
+        if: ${{ matrix.platform == 'android' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: 💾 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+          key: frontend-mobile-${{ matrix.platform }}
+
+      - name: 📦 安装前端依赖
+        run: pnpm --dir client install --frozen-lockfile
+
+      - name: 🤖 初始化 Android 项目
+        if: ${{ matrix.platform == 'android' }}
+        run: |
+          if [ ! -d client/src-tauri/gen/android ]; then
+            pnpm --dir client tauri android init
+          fi
+
+      - name: 🍎 初始化 iOS 项目
+        if: ${{ matrix.platform == 'ios' }}
+        run: |
+          if [ ! -d client/src-tauri/gen/apple ]; then
+            pnpm --dir client tauri ios init
+          fi
+
+      - name: 📱 构建移动端前端
+        run: pnpm --dir client tauri ${{ matrix.args }}
+
+      - name: 📦 整理移动端构建产物
+        run: |
+          mkdir -p "${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}"
+          shopt -s globstar nullglob
+          for artifact in ${{ matrix.artifact_glob }}; do
+            cp "$artifact" "${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}/"
+          done
+          test -n "$(find "${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}" -type f -print -quit)"
+
+      - name: ⬆️ 上传移动端构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-frontend-mobile-${{ matrix.platform }}
+          path: ${{ env.RELEASE_DIR }}/frontend-mobile/${{ matrix.platform }}/*
+          if-no-files-found: error
+
+  publish:
+    name: 🚀 上传 Release 产物
+    needs:
+      - check-private-tag
+      - backend
+      - frontend-desktop
+      - frontend-mobile
+    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 💾 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ env.RELEASE_DIR }}
+          merge-multiple: true
+
+      - name: 📤 上传 Release 产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
+        run: |
+          printf 'SakuraBot %s build complete\n' "$RELEASE_TAG" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
+          find "${{ env.RELEASE_DIR }}" -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
