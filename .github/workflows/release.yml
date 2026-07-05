@@ -33,11 +33,16 @@ jobs:
       - name: 🔎 检查最新 tag 和发布 Release
         id: check
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN  }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MANUAL_TAG: ${{ inputs.tag }}
           PUBLIC_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::缺少 GH_TOKEN。请在发布仓库 Secrets 中配置具备源码读取和 Release 写入权限的 token。"
+            exit 1
+          fi
 
           if [ -n "$MANUAL_TAG" ]; then
             tag="$MANUAL_TAG"
@@ -61,7 +66,7 @@ jobs:
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-          release_json="$(GH_TOKEN='${{ secrets.GH_TOKEN }}' gh api repos/$PUBLIC_REPOSITORY/releases/tags/$tag 2>/dev/null || true)"
+          release_json="$(gh api repos/$PUBLIC_REPOSITORY/releases/tags/$tag 2>/dev/null || true)"
           build_complete="$(printf '%s' "$release_json" | jq -r '.assets[]?.name | select(. == "SakuraBot-build-complete.txt")' 2>/dev/null || true)"
 
           if [ -n "$build_complete" ]; then
@@ -81,6 +86,7 @@ jobs:
       - name: 🏷️ 创建或复用 Release
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
         run: |
           set -euo pipefail
@@ -127,7 +133,7 @@ jobs:
         with:
           repository: ${{ env.PRIVATE_REPOSITORY }}
           ref: ${{ needs.check-private-tag.outputs.tag }}
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
       - name: ✅ 校验源码
@@ -193,7 +199,7 @@ jobs:
         with:
           repository: ${{ env.PRIVATE_REPOSITORY }}
           ref: ${{ needs.check-private-tag.outputs.tag }}
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
       - name: ✅ 校验源码
@@ -284,7 +290,7 @@ jobs:
         with:
           repository: ${{ env.PRIVATE_REPOSITORY }}
           ref: ${{ needs.check-private-tag.outputs.tag }}
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
       - name: ✅ 校验源码
@@ -373,6 +379,7 @@ jobs:
       - name: 📤 上传 Release 产物
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
         run: |
           printf 'SakuraBot %s build complete\n' "$RELEASE_TAG" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
