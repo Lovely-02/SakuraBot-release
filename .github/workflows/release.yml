@@ -33,7 +33,7 @@ jobs:
       - name: 🔎 检查最新 tag 和发布 Release
         id: check
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN  }}
           MANUAL_TAG: ${{ inputs.tag }}
           PUBLIC_REPOSITORY: ${{ github.repository }}
         run: |
@@ -61,7 +61,7 @@ jobs:
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-          release_json="$(GH_TOKEN='${{ secrets.GITHUB_TOKEN }}' gh api repos/$PUBLIC_REPOSITORY/releases/tags/$tag 2>/dev/null || true)"
+          release_json="$(GH_TOKEN='${{ secrets.GH_TOKEN }}' gh api repos/$PUBLIC_REPOSITORY/releases/tags/$tag 2>/dev/null || true)"
           build_complete="$(printf '%s' "$release_json" | jq -r '.assets[]?.name | select(. == "SakuraBot-build-complete.txt")' 2>/dev/null || true)"
 
           if [ -n "$build_complete" ]; then
@@ -80,7 +80,7 @@ jobs:
     steps:
       - name: 🏷️ 创建或复用 Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
         run: |
           set -euo pipefail
@@ -239,7 +239,7 @@ jobs:
       - name: 🖥️ 构建桌面端前端
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         with:
           projectPath: client
           args: --target ${{ matrix.target }}
@@ -372,7 +372,7 @@ jobs:
 
       - name: 📤 上传 Release 产物
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           RELEASE_TAG: ${{ needs.check-private-tag.outputs.tag }}
         run: |
           printf 'SakuraBot %s build complete\n' "$RELEASE_TAG" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
