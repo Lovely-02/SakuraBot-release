@@ -188,13 +188,25 @@ http://127.0.0.1:3000/webhook/{app_id}/{app_secret}
 1. 源码仓库推送 Release tag。
 2. 本仓库通过 cron 定时检查源码仓库最新 tag。
 3. 如果发布仓库对应 Release 没有 `SakuraBot-build-complete.txt` 完成标记，则开始构建。
-4. GitHub Actions 使用 `PRIVATE_REPO_TOKEN` 检出源码仓库对应 tag 的源码。
+4. GitHub Actions 使用 `GH_TOKEN` 检出源码仓库对应 tag 的源码。
 5. 分别构建后端、桌面端和移动端产物。
 6. 将构建产物和完成标记上传到本仓库 Release。
 
 也可以在 Actions 页面手动运行 `🚀 发版构建`，输入需要构建的 tag；留空则检查源码仓库最新 tag。
 
-需要在发布仓库 Secrets 中配置 `PRIVATE_REPO_TOKEN`，该 token 需要拥有读取源码仓库 `Lovely-02/SakuraBot` 的权限。
+需要在发布仓库 Secrets 中配置 `GH_TOKEN`，该 token 需要拥有读取源码仓库 `Lovely-02/SakuraBot` 和写入本仓库 Release 的权限。
+
+Android 构建使用 Tauri 2.11 所需的 Android API 36，并输出 ARM64 APK。
+
+iOS 真机 IPA 还需要 Apple Developer 签名材料。将以下内容配置到仓库 Secrets：
+
+```text
+IOS_CERTIFICATE
+IOS_CERTIFICATE_PASSWORD
+IOS_MOBILE_PROVISION
+```
+
+`IOS_CERTIFICATE` 和 `IOS_MOBILE_PROVISION` 使用 Base64 编码。未配置这些 Secrets 时，工作流会改为构建无需签名的 iOS 模拟器应用，并上传 `SakuraBot-ios-simulator.app.tar.gz`。模拟器产物不能直接安装到真机。
 
 ## ❓ 常见问题
 
