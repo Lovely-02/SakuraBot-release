@@ -10,6 +10,11 @@ on:
         description: 源码 Release 标签；留空则检查最新 tag
         required: false
         type: string
+      force_rebuild:
+        description: 忽略已有完成标记并重新构建指定 tag
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '*/30 * * * *'
 
@@ -39,6 +44,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           DISPATCH_TAG: ${{ github.event.client_payload.tag }}
           MANUAL_TAG: ${{ inputs.tag }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
           PUBLIC_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -74,13 +80,24 @@ jobs:
 
           release_json="$(gh api repos/$PUBLIC_REPOSITORY/releases/tags/$tag 2>/dev/null || true)"
           build_complete="$(printf '%s' "$release_json" | jq -r '.assets[]?.name | select(. == "SakuraBot-build-complete.txt")' 2>/dev/null || true)"
+          build_complete_asset_id="$(printf '%s' "$release_json" | jq -r '.assets[]? | select(.name == "SakuraBot-build-complete.txt") | .id' 2>/dev/null || true)"
 
-          if [ -n "$build_complete" ]; then
+          if [ "$FORCE_REBUILD" = "true" ] && [ -n "$build_complete_asset_id" ]; then
+            gh api --method DELETE "repos/$PUBLIC_REPOSITORY/releases/assets/$build_complete_asset_id"
+            build_complete=""
+            echo "已删除旧的构建完成标记，准备强制重建：$tag"
+          fi
+
+          if [ -n "$build_complete" ] && [ "$FORCE_REBUILD" != "true" ]; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "发布 Release $tag 已有构建完成标记，跳过构建。"
           else
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "发现需要构建的 tag：$tag"
+            if [ -n "$build_complete" ]; then
+              echo "强制重新构建已有完成标记的 tag：$tag"
+            else
+              echo "发现需要构建的 tag：$tag"
+            fi
           fi
 
   backend:
@@ -317,6 +334,10 @@ jobs:
         working-directory: client
         run: pnpm tauri ios init --ci --skip-targets-install
 
+      - name: 🌸 写入自定义应用图标
+        working-directory: client
+        run: pnpm icons
+
       - name: 📱 构建无签名 iOS IPA
         working-directory: client
         run: pnpm tauri ios build --no-sign
@@ -343,19 +364,46 @@ jobs:
       - backend
       - frontend-desktop
       - frontend-ios
-    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() && needs.backend.result == 'success' && needs.frontend-desktop.result == 'success' && needs.frontend-ios.result == 'success' }}
+    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: 💾 下载全部构建产物
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           path: ${{ env.RELEASE_DIR }}
           merge-multiple: true
 
-      - name: 📤 上传 Release 产物
-        run: printf 'SakuraBot %s build complete\n' "${{ needs.check-private-tag.outputs.tag }}" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
+      - name: 🧾 汇总构建状态
+        id: build-result
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          DESKTOP_RESULT: ${{ needs.frontend-desktop.result }}
+          IOS_RESULT: ${{ needs.frontend-ios.result }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ env.RELEASE_DIR }}"
+
+          if find "${{ env.RELEASE_DIR }}" -type f -print -quit | grep -q .; then
+            has_artifacts=true
+          else
+            has_artifacts=false
+          fi
+
+          if [ "$BACKEND_RESULT" = "success" ] && [ "$DESKTOP_RESULT" = "success" ] && [ "$IOS_RESULT" = "success" ] && [ "$has_artifacts" = "true" ]; then
+            status="全部平台构建成功"
+            printf 'SakuraBot %s build complete\n' "${{ needs.check-private-tag.outputs.tag }}" > "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
+          else
+            status="部分平台构建失败；已发布成功产物，后续任务会继续重试"
+            rm -f "${{ env.RELEASE_DIR }}/SakuraBot-build-complete.txt"
+            echo "::warning::后端=$BACKEND_RESULT，桌面端=$DESKTOP_RESULT，iOS=$IOS_RESULT"
+          fi
+
+          echo "has_artifacts=$has_artifacts" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
 
       - name: 🚀 创建或更新 Release
+        if: ${{ steps.build-result.outputs.has_artifacts == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check-private-tag.outputs.tag }}
@@ -366,5 +414,7 @@ jobs:
             ## SakuraBot ${{ needs.check-private-tag.outputs.tag }}
 
             本 Release 由发布仓库自动构建。
+
+            构建状态：${{ steps.build-result.outputs.status }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
