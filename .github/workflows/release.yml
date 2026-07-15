@@ -313,6 +313,10 @@ jobs:
       - name: 📦 安装前端依赖
         run: pnpm --dir client install --frozen-lockfile
 
+      - name: 🍎 初始化 iOS 工程
+        working-directory: client
+        run: pnpm tauri ios init --ci --skip-targets-install
+
       - name: 📱 构建无签名 iOS IPA
         working-directory: client
         run: pnpm tauri ios build --no-sign
