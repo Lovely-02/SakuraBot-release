@@ -32,6 +32,7 @@ SakuraBot-backend-x86_64-pc-windows-msvc.tar.gz
 SakuraBot-backend-x86_64-apple-darwin.tar.gz
 SakuraBot-backend-x86_64-unknown-linux-gnu.tar.gz
 SakuraBot-frontend-desktop-...
+SakuraBot-frontend-ios-unsigned.ipa
 ```
 
 不同版本的实际文件名以 Releases 页面为准。
@@ -187,7 +188,7 @@ http://127.0.0.1:3000/webhook/{app_id}/{app_secret}
 2. 本仓库通过 cron 定时检查源码仓库最新 tag。
 3. 如果发布仓库对应 Release 没有 `SakuraBot-build-complete.txt` 完成标记，则开始构建。
 4. GitHub Actions 使用 `GH_TOKEN` 检出源码仓库对应 tag 的源码。
-5. 分别构建后端和桌面端产物。
+5. 分别构建后端、桌面端和无签名 iOS IPA 产物。
 6. 将构建产物和完成标记上传到本仓库 Release。
 
 也可以在 Actions 页面手动运行 `🚀 发版构建`，输入需要构建的 tag；留空则检查源码仓库最新 tag。

@@ -264,13 +264,82 @@ jobs:
           path: ${{ env.RELEASE_DIR }}/frontend-desktop/${{ matrix.target }}/*
           if-no-files-found: error
 
+  frontend-ios:
+    name: 📱 前端 iOS 无签名构建
+    needs: check-private-tag
+    if: ${{ needs.check-private-tag.outputs.should_build == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: 📂 检出源码仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPOSITORY }}
+          ref: ${{ needs.check-private-tag.outputs.tag }}
+          token: ${{ secrets.GH_TOKEN }}
+          fetch-depth: 0
+
+      - name: ✅ 校验源码
+        run: |
+          test -f client/package.json
+          test -f client/pnpm-lock.yaml
+          test -f client/src-tauri/Cargo.toml
+          test -f client/src-tauri/src/lib.rs
+          test -f client/src-tauri/Info.ios.plist
+          test -f client/src-tauri/icons/ios/AppIcon-512@2x.png
+
+      - name: 📦 配置 PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: ⚙️ 设置 Node.js 运行环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: ⚙️ 设置 Rust 运行环境
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: 💾 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+          key: frontend-ios-aarch64-apple-ios
+
+      - name: 📦 安装前端依赖
+        run: pnpm --dir client install --frozen-lockfile
+
+      - name: 📱 构建无签名 iOS IPA
+        working-directory: client
+        run: pnpm tauri ios build --no-sign
+
+      - name: 📦 整理 iOS 构建产物
+        run: |
+          ipa_path="$(find client/src-tauri/gen/apple/build/arm64 -maxdepth 1 -type f -name "*.ipa" -print -quit)"
+          test -n "$ipa_path"
+          mkdir -p "${{ env.RELEASE_DIR }}/frontend-ios"
+          cp "$ipa_path" "${{ env.RELEASE_DIR }}/frontend-ios/${{ env.APP_NAME }}-frontend-ios-unsigned.ipa"
+          unzip -t "${{ env.RELEASE_DIR }}/frontend-ios/${{ env.APP_NAME }}-frontend-ios-unsigned.ipa"
+
+      - name: ⬆️ 上传 iOS 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-frontend-ios-unsigned
+          path: ${{ env.RELEASE_DIR }}/frontend-ios/${{ env.APP_NAME }}-frontend-ios-unsigned.ipa
+          if-no-files-found: error
+
   publish:
     name: 🚀 上传 Release 产物
     needs:
       - check-private-tag
       - backend
       - frontend-desktop
-    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() && needs.backend.result == 'success' && needs.frontend-desktop.result == 'success' }}
+      - frontend-ios
+    if: ${{ always() && needs.check-private-tag.outputs.should_build == 'true' && !cancelled() && needs.backend.result == 'success' && needs.frontend-desktop.result == 'success' && needs.frontend-ios.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: 💾 下载全部构建产物
